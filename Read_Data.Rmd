@@ -1,0 +1,1103 @@
+---
+title: "Variant Call Using FASTA Files"
+author: "Gepoliano Chaves, Ph. D."
+date: "July 21, 2021"
+#output: pdf_document
+#output: revealjs::revealjs_presentation
+#output: html_notebook
+#output: beamer_presentation
+#output: github_document
+#output: html_vignette
+#output: ioslides_presentation
+output: slidy_presentation 
+#output: tufte::tufte_book
+---
+
+# 1.1) Introduction
+
+In Chaves (2019), we discuss on the application of knowledge on the Biological Association between genotype (the DNA polymorphisms) and phenotype using statistical software (PLINK). We also had an introduction to programming, with the installation of libraries in R and and Bash and a brief discussion on how to process files using R and Bash. Here, we expand the notion of a text file, to the notion of information stored in the form of text. Therefore, in a file, we can also store a biological sequence. The first biological sequence storage file that we should discuss should be the FASTA file. Our discussion should also include information stored in FASTQ, SAM, BAM, BCF and VCF files. In this notebook, we will use information stored in a VCF file to generate commands that allow us to extract useful information from the files we analyze.
+
+# 1.2) Introduction: what will we do today
+
+* Download FASTA files from GISAID database using the period 07/01/2020 to 12/31/2020 as reference
+* This is an approximation to the begin of detection of SARS-CoV-2 new variants
+* Fragment each of the 317 downloaded sequences (in the case of samples from Brazil)
+* Align sequences to Reference Genome
+* Compare and identify variants
+* Produce alignment and variant files
+
+
+# 1) FASTA file
+
+![FASTA file formatting: a text file containing a biological sequence.](./Figures/FASTA.png)
+
+
+# 1) Explaining the Pipeline
+
+In this notebook, we deepen the analysis of sequences with the beginning of the Identification of Genetic Variants. Here, we treat genetic variants as DNA polymorphisms. A DNA polymorphism is a mutation or variant, which differs from the nucleotide found at the same position in the FASTA sequence used as a reference. Thus, the present *pipeline* defines the computational protocol for Biological or Genetic Association with a phenotypic trait. In English this computational protocol is called *Variant Call*.
+
+# 1) Explaining the Pipeline: SNPs
+
+In this Booklet, we will make a *Variant Call* using FASTA files that contain the SARS-CoV-2 genome, which is the biological sequence of the virus genome, in a text file, specifically called FASTA (Figure 1). We identified SARS-CoV-2 variants using samtools and bcftools to extract genetic polymorphisms from FASTA files. The FASTA file must be downloaded from GISAID and stored locally, in a folder on the researcher's local system. Genetic variants, also called SNPs (*Single Nucleotide Polymorphisms*), are determined by comparing a FASTA file used as a reference, with the isolated sequence of the geographic region of interest.
+
+# 1) Explaining the Pipeline: GISAID Database
+
+By comparing the FASTA sequence of each region of the planet to a reference FASTA sequence, for example the first FASTA sequence corresponding to the initial patient presenting symptoms of respiratory syndrome, later identified as caused by SARS-CoV-2, we can note each position where there is a nucleotide different from the FASTA reference sequence obtained from the first Chinese patient. We say, then, that in the other regions, there are virus mutations, or, more technically, polymorphisms of the viral genetic material. FASTA files from virtually every region of the planet can be obtained from the German GISAID (Global Initiative on Sharing Avian Influenza Data) database. Information about the GISAID database can be obtained from its website:
+
+https://www.gisaid.org
+
+# 1) Explaining the Pipeline: Gene Expression Omnibus (GEO)
+
+In Computational Biology Notebook Number 6, we will learn how to identify genetic variants using FASTQ files instead of FASTA files. FASTQ files can be analyzed directly from a database called *Gene Expression Omnibus* (GEO). The advantage of GEO compared to GISAID is that if the proper pipeline of identification of genetic variants in GEO is used, local storage of sequencing files is not required.
+
+# 1) *script* submission to computational server
+
+Often, the amount of sequencing data to be analyzed is so large that it is necessary to use computers with super-powerful storage capacity. The part below, encoded in Bash, is made using the Linux Operating System. The code represents a type of "header" that must be included for submitting scripts using the Linux system on computer servers.
+
+# 1) *script* submission to computational server
+
+
+```{bash, eval = F}
+#!/bin/bash
+#SBATCH --partition=128x24
+##SBATCH --job-name=Variants_BWA # Job name
+##SBATCH --mail-type=ALL              # Mail events (NONE, BEGIN, END, FAIL, ALL)
+##SBATCH --mail-user=gchaves@ucsc.edu  # Where to send mail	
+##SBATCH --nodes=1                    # Use one node
+##SBATCH --ntasks=1                   # Run a single task	
+##SBATCH --cpus-per-task=4            # Number of CPU cores per task
+##SBATCH --output=Variants_BWA     # Standard output and error log
+# 
+# module load gcc/5.4.0
+source ~/.bashrc
+```
+
+# 2) Dealing with your computer system architecture: Creating Folders for Data Storage
+
+File organization is essential for clear and organized steps in the various procedures used, often without perfect visualization of how the computer performs. The chunk below creates folders for the storage of the reference FASTA file, the FASTA files of the region of interest, the SAM and BAM alignment files and finally, the BCF and VCF files. These files contain information about position/position of the identified mutations in the linear genome. VCF files are extracted in two versions: one containing SNPs and one containing indels relative to the samples analyzed.
+
+```{bash}
+# Create folder to store data per region
+mkdir -p regions
+
+# Change directory to create folder for a region of interest
+cd regions
+regionOfinterest=brazil
+
+# Create folder for region of interest
+mkdir -p $regionOfinterest
+
+# Change directory to create folder for storage of files that will contain genetic variants
+cd $regionOfinterest
+
+# Create fasta folder inside region of interest
+mkdir -p fasta
+
+# Create SAM folder inside region of interest
+mkdir -p sam
+
+# Create bam folder inside region of interest
+mkdir -p bam
+
+# Create bcf folder inside region of interest
+mkdir -p bcf
+
+# Create vcf (snps) folder inside region of interest
+mkdir -p vcf_snps
+
+# Create vcf (indels) folder inside region of interest
+mkdir -p vcf_indels
+```
+
+
+# 2) General Organization of the Pipeline
+
+The following steps must be performed by the genetic variant identification pipeline:
+
+* Indexing
+
+* Alignment
+
+* Identification of variants
+
+* Extracting and exporting variants
+
+* Calculation of genotype or allele frequencies
+
+# 2.1) Indexing Using BWA Program
+
+* Indexing only needs to be done once
+
+* The same index is used for aligning different samples using a single FASTA reference sequence.
+
+```{bash}
+# Fasta reference directory and Fasta file
+projectDirectory="./"
+fastaDirectory="/fasta_reference_file/"
+fastaFile="SARS-CoV-2.fasta"
+
+# Concatenated file as string
+finalFile=${projectDirectory}${fastaDirectory}${fastaFile}
+
+# Index fasta file using concatenated string
+~/anaconda3/bin/bwa index -a bwtsw $finalFile
+```
+
+# 2.1) What is indexing used for?
+
+* Indexing a genome can be explained similar to indexing a book.
+* If you want to know on which page a certain word appears or a chapter begins, it is much more efficient/faster to look it up in a pre-built index than going through every page of the book until you found it.
+* Same goes for alignments.
+
+# 2.1) What is indexing used for?
+
+* Indices allow the aligner to narrow down the potential origin of a query sequence within the genome, saving both time and memory.
+
+* You may have a look at Ben Langmeads youtube channel (creator of the bowtie and bowtie2 alignment software), where he lectures about concepts of sequence alignments, including the idea of indexing.
+
+# 2.1) What is indexing used for?
+
+* References
+
+https://www.biostars.org/p/212594/
+
+https://www.youtube.com/user/BenLangmead
+
+# 2.2) Copy FASTA file from SARS-CoV-2_Regions to fasta folder
+
+* You can do the alignment with FASTA files present in the gitlab repository;
+
+* For simplicity, we will copy the fasta file from SARS-CoV-2_Regions folder to fasta folder and proceed as if we had downloaded these samples from GISAID directly to fasta folder;
+
+* The FASTA file downloaded from GISAID to the SARS-CoV-2_Regions folder was named according to the region (Brazil) and the dates of collection and submission of the files.
+
+* Move FASTA file to the region of interest, according to where fasta folder is located;
+
+* Later, we may want to calculate frequency of new variants between certain periods of time, for certain regions;
+
+* We need to pay attention to the names of folders and files we create.
+
+```{bash}
+# We again declare the name of the region of interest where we will store fasta files
+regionOfinterest=brazil
+
+# and copy original FASTA file to the fasta directory
+cp ./SARS-CoV-2_Regions/*fasta ./regions/$regionOfinterest/fasta
+```
+
+# 2.3) Split FASTA file, deleting the file downloaded from GISAID
+
+* It is necessary to install the **splitfasta** program to "break" the downloaded FASTA file;
+
+* After splitting the file, delete the original file
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the folder where file downloaded from GISAID is located.
+cd ./regions/$regionOfinterest/fasta
+
+# Define the original fasta name to be split and removed afterwards
+originalFasta=Brazil_2020_07_01-2020_12_31
+
+# Use splitfasta to split big FASTA file into its pieces.
+/Users/gepolianochaves/anaconda3/bin/splitfasta $originalFasta".fasta"
+
+# Remove the original fasta file 
+rm $originalFasta".fasta"
+
+# Move FASTA files from split_files folder to fasta folder
+mv *split_files/*fasta ./
+
+# Remove folder containing fasta files
+rm -r *split_files
+```
+
+# 2.4) Print fasta name and rename fasta file based on header ID
+
+# 2.4.1) Files in bash
+
+Reference for While loop to map file number and file names:
+https://unix.stackexchange.com/questions/613880/rename-multiple-files-according-using-a-names-list
+
+Reference for Variant_Occurrence vector calculation:
+https://stackoverflow.com/questions/70186142/syntax-error-near-unexpected-token-if-in-bash-scripting
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the folder where file downloaded from GISAID is located.
+cd ./regions/$regionOfinterest/fasta
+
+# Extracts ids based on fasta header
+for fasta_file in *fasta; do awk -F"/" '/\|/ {print "Brazil/"$3}' $fasta_file ; done > fasta_ids.txt
+
+# Extracts list of splitfasta given names
+du -sh Brazil_2020_07_01-2020_12_31* | awk '{print $2}' > split_fasta_names
+
+# Create column that has file names as given by split fasta
+split_fasta_names=$(du -sh Brazil_2020_07_01-2020_12_31* | awk '{print $2}')
+
+# Create column that has ids as given by fasta headers
+fasta_header_ids=$(for fasta_file in *fasta; do awk -F"/" '/\|/ {print "Brazil/"$3}' $fasta_file ; done)
+
+# Define position for variant of interest
+Variant=23063
+
+# Count total number of times variant appears
+Variant_Total_Occurrences=$(awk '{print $2}' ../vcf_snps/* | grep -w $Variant | wc -l )
+
+######    This only works on the terminal, not here in the markdown notebook     ###### 
+###### Therefore the commands below need to be executed directly in the terminal ###### 
+###### The code below prints 1 if variant is present, 0 otherwise
+###### When I inserted a # after the word "do", bellow, there was an error
+Variant_Occurrence=$(for vcf_file in ../vcf_snps/*vcf; do 
+if [[ $(grep -L $Variant ../vcf_snps/$vcf_file) ]]; then   
+  echo "0"; 
+  else
+  echo "1"
+fi
+done) # This done is placed here to close the do statement from above. See the reference in the note above
+
+echo $Variant_Occurrence # This prints a line, instead of the column when in the markdown notebook
+
+# Prints names of vcf files
+vcf_file=$(for vcf_file in ../vcf_snps/*vcf; do echo $vcf_file; done)
+
+# This maps (tables) one and the other columns
+map_fasta_ids=$(paste -d ' ' <(echo "$fasta_header_ids") <(echo "$split_fasta_names") <(echo "$Variant_Occurrence") <(echo "$vcf_file"))
+
+# This maps (tables) the fasta_header_ids, split_fasta_names and vcf_file as columns.
+# The last column should be the Variant_Occurrence vector
+map_fasta_ids=$(paste -d ' ' <(echo "$fasta_header_ids") <(echo "$split_fasta_names") <(echo "$vcf_file") <(echo "$Variant_Occurrence")) 
+
+# Prints map_fasta_ids to file
+# Ideally this file can be used in R to get the names/positions of SARS-CoV-2 variants
+echo $map_fasta_ids > ../../../data/map_fasta_ids.txt
+
+# Original script w/ echo:
+#c=0
+#while IFS= read -r name; do
+#    ((c++))
+#    echo mv -- "Brazil_2020_07_01-2020_12_31_$c.fasta" "$name.fasta"
+#done < fasta_ids.txt
+```
+
+# 2.4.2) Construct dataframe in for loop
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the folder where file downloaded from GISAID is located.
+cd ./regions/$regionOfinterest/fasta
+
+# Extracts ids based on fasta header
+for fasta_file in *fasta; do awk -F"/" '/\|/ {print "Brazil/"$3}' $fasta_file ; done > fasta_ids.txt
+
+# Extracts list of splitfasta given names
+du -sh Brazil_2020_07_01-2020_12_31* | awk '{print $2}' > split_fasta_names
+
+# Create column that has file names as given by split fasta
+split_fasta_names=$(du -sh Brazil_2020_07_01-2020_12_31* | awk '{print $2}')
+
+# Create column that has ids as given by fasta headers
+fasta_header_ids=$(for fasta_file in *fasta; do awk -F"/" '/\|/ {print "Brazil/"$3}' $fasta_file ; done)
+
+# Define position for variant of interest
+Variant=23063
+
+# Count total number of times variant appears
+Variant_Total_Occurrences=$(awk '{print $2}' ../vcf_snps/* | grep -w $Variant | wc -l )
+
+######    This only works on the terminal, not here in the markdown notebook     ###### 
+###### Therefore the commands below need to be executed directly in the terminal ###### 
+###### The code below prints 1 if variant is present, 0 otherwise
+###### When I inserted a # after the word "do", bellow, there was an error
+Variant_Occurrence=$(for vcf_file in ../vcf_snps/*vcf; do 
+if [[ $(grep -L $Variant ../vcf_snps/$vcf_file) ]]; then   
+  echo "0"; 
+  else
+  echo "1"
+fi
+done) # This done is placed here to close the do statement from above. See the reference in the note above
+
+
+
+
+
+
+variant_occurrence_empty=""
+for Variant in $(cat ../../../VariantList/snp_list_merged_head20.txt)
+
+do
+
+    echo "Good job. occurrence for Position "$Variant"bp started in vcf files"
+
+    Variant_Occurrence=$(for vcf_file in ../vcf_snps/*vcf; do 
+    if [[ $(grep -L $Variant ../vcf_snps/$vcf_file) ]]; then   
+      echo "0"; 
+      else
+      echo "1"
+fi
+done)
+
+    echo "Good job. occurrence for Position "$Variant"bp just ended"
+
+    variant_occurrence_empty=$(paste -d ' ' <(echo "$Variant bp") <(echo "$Variant_Occurrence") <(echo "$variant_occurrence_empty"))
+
+done
+
+echo $variant_occurrence_empty > ../../../data/variant_occurrence_empty.txt
+
+
+
+
+
+
+
+
+
+echo $Variant_Occurrence # This prints a line, instead of the column when in the markdown notebook
+
+# Prints names of vcf files
+vcf_file=$(for vcf_file in ../vcf_snps/*vcf; do echo $vcf_file; done)
+
+# This maps (tables) one and the other columns
+map_fasta_ids=$(paste -d ' ' <(echo "$fasta_header_ids") <(echo "$split_fasta_names") <(echo "$Variant_Occurrence") <(echo "$vcf_file"))
+
+# This maps (tables) the fasta_header_ids, split_fasta_names and vcf_file as columns.
+# The last column should be the Variant_Occurrence vector
+map_fasta_ids=$(paste -d ' ' <(echo "$fasta_header_ids") <(echo "$split_fasta_names") <(echo "$vcf_file") <(echo "$Variant_Occurrence")) 
+
+# Prints map_fasta_ids to file
+# Ideally this file can be used in R to get the names/positions of SARS-CoV-2 variants
+echo $map_fasta_ids > ../../../data/map_fasta_ids.txt
+
+# Original script w/ echo:
+#c=0
+#while IFS= read -r name; do
+#    ((c++))
+#    echo mv -- "Brazil_2020_07_01-2020_12_31_$c.fasta" "$name.fasta"
+#done < fasta_ids.txt
+```
+
+
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the folder where file downloaded from GISAID is located.
+cd ./regions/$regionOfinterest/fasta
+
+pwd
+
+# Prints 1 if variant present, 0 otherwise
+Variant_Occurrence=$(for vcf_file in ../vcf_snps/*vcf; do # this do is important
+if [[ $(grep -L $Variant ../vcf_snps/$vcf_file) ]]; then   
+  echo "0"; 
+  else
+  echo "1"
+fi
+done) # This done is placed here to close the do statement from above. See the reference in the note above
+
+# Print to text
+echo $Variant_Occurrence
+echo $Variant_Occurrence > Variant_Occurrence.txt
+
+# Reshape line to column, from txt file
+#rs -Tzc: < echo Variant_Occurrence
+
+#rm Variant_Occurrence
+
+```
+
+# 2.4.3) Merge Files in R
+
+```{r}
+metadata <- read.table("./data/gisaid_auspice_input_hcov-19_2022_09_01_03/1662003410802.metadata.tsv",
+                        sep = '\t', header = TRUE)
+
+map_fasta_ids <- read.table("./data/map_fasta_ids_1.txt")
+
+colnames(map_fasta_ids)<-c("fasta_header_ids",
+                          "split_fasta_names",
+                          "Variant_Occurrence",
+                          "vcf_file")
+
+library(stringr)
+strain_parts <- str_split_fixed(metadata$strain, "/", 4)
+
+map_fasta_ids$strain <- paste(strain_parts[,1], 
+                              strain_parts[,2], 
+                              strain_parts[,3], 
+                              strain_parts[,4], 
+                              sep="/")
+
+library(dplyr)
+map_fasta_ids <- map_fasta_ids %>% relocate(strain, .before = fasta_header_ids)
+
+library("data.table")
+dt1 <- data.table(map_fasta_ids, key = "strain") 
+dt2 <- data.table(metadata, key = "strain")
+joined.dt1.dt.2 <- dt1[dt2]
+variant_occurrence_df <- dt1[dt2]
+
+  
+variant_occurrence_test <- read.table("./data/variant_occurrence_empty.txt",
+                        sep = '\t', header = F)
+```
+
+# 2.5) Create list of FASTA files
+
+* View FASTA file list in Brazil folder;
+
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the fasta folder.
+cd ./regions/$regionOfinterest/fasta
+for i in *fasta; do echo $i; done
+```
+
+# 2.6) Count number of FASTA files in Brazil folder
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the fasta folder.
+cd ./regions/$regionOfinterest/fasta
+
+for i in *fasta; do echo $i; done | wc -l
+```
+
+# 2.7) Create list of fasta files
+
+* Create list with FASTA files from Brazil;
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to the fasta folder.
+cd ./regions/$regionOfinterest/fasta
+
+for i in *fasta; do echo $i; done > COVID_List_Region.txt
+wc -l COVID_List_Region.txt ## Total number of FASTA files
+```
+
+
+# 3) Alignment in *for loop*
+
+# 3.1) Variant Call Pipeline
+
+* This alignment loop uses the list containing the fasta files to align against the Reference Genome.
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+for fasta_file in $(cat ./regions/$regionOfinterest/fasta/COVID_List_Region.txt); do 
+
+  ## Print names of Project Directory and FASTA file
+  echo $ProjectDirectory
+  echo $fasta_file
+
+  
+    ## Alignment
+ /Users/gepolianochaves/anaconda3/bin/bwa mem -M -R \
+  '@RG\tID:SampleCorona\tLB:sample_1\tPL:ILLUMINA\tPM:HISEQ\tSM:SampleCorona' \
+  ./fasta_reference_file/SARS-CoV-2.fasta \
+  ./regions/$regionOfinterest/fasta/$fasta_file > \
+  ./regions/$regionOfinterest/sam/$fasta_file".sam"
+  
+  
+  ## SAM to BAM
+  ~/Downloads/samtools-1.14/samtools view -S -b ./regions/$regionOfinterest/sam/$fasta_file".sam" > \
+  ./regions/$regionOfinterest/bam/$fasta_file".bam"
+  
+  
+  ## Samtools uses reference FASTA to detect "piles" in the alignment
+  ~/Downloads/samtools-1.14/samtools mpileup -g -f ./fasta_reference_file/SARS-CoV-2.fasta ./regions/$regionOfinterest/bam/$fasta_file".bam" > \
+  ./regions/$regionOfinterest/bcf/$fasta_file".bcf"
+  
+  
+  ## Bcftools extracts SNPs
+  ~/Downloads/bcftools-1.14/bcftools view -v snps ./regions/$regionOfinterest/bcf/$fasta_file".bcf" > \
+  ./regions/$regionOfinterest/vcf_snps/$fasta_file"_snps.vcf"
+
+
+  ## Bcftools extracts indels
+  ~/Downloads/bcftools-1.14/bcftools view -v indels ./regions/$regionOfinterest/bcf/$fasta_file".bcf" > \
+  ./regions/$regionOfinterest/vcf_indels/$fasta_file"_indels.vcf"
+
+done
+```
+
+# 3.2) VCF file output: The Main File Result
+
+* The VCF file is the main result of the Variant Call Pipeline
+
+* VCF files contain the mutation positions that we will extract using a costumized shell script
+
+
+![VCF file formatting: a text file containing the position and the alteration of a nucleotide position (SNP).](./Figures/VCF.png)
+
+# 4) Merge vcf files and concatenate list of SNPs
+
+# List vcf files
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Make folder to store compressed vcf files
+mkdir -p regions/$regionOfinterest/zip
+
+# Move to the vcf folder.
+cd ./regions/$regionOfinterest/vcf_snps
+
+# Save list of vcf files in zip folder
+for i in *vcf; do echo $i; done > ../zip/vcf_files_list.txt
+wc -l ../zip/vcf_files_list.txt ## Total number of vcf files
+```
+
+# Zip vcf files in Zip folder
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+cd ./regions/$regionOfinterest/
+
+# Copy vcf files to zip folder
+cp vcf_snps/*.vcf zip
+
+# Go to folder containing vcf
+cd zip
+# Save gzip files in the zip folder
+for x in $(cat vcf_files_list.txt); do ~/anaconda3/bin/bgzip $x; done
+
+# List of zipped files
+for i in *gz; do echo $i; done > zipped_files_list.txt
+```
+
+# Index
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+cd ./regions/$regionOfinterest/
+
+# Go to folder containing zipped files
+cd zip
+
+for x in $(cat zipped_files_list.txt); do ~/anaconda3/bin/tabix $x; done
+```
+
+# List Files to Merge
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+cd ./regions/$regionOfinterest/
+
+# Go to folder containing zipped files
+cd zip
+
+for x in *gz; do echo $x; done 
+```
+
+# Merge bcftools (All)
+
+```{bash, eval = F}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+cd ./regions/$regionOfinterest/
+
+# Go to folder containing zipped files
+cd zip
+
+~/Downloads/bcftools-1.14/bcftools merge --missing-to-ref --force-samples \
+Brazil_2020_07_01-2020_12_31_1.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_10.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_100.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_101.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_102.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_103.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_104.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_105.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_106.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_107.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_108.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_109.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_11.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_110.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_111.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_112.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_113.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_114.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_115.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_116.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_117.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_118.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_119.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_12.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_120.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_121.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_122.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_123.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_124.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_125.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_126.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_127.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_128.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_129.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_13.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_130.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_131.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_132.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_133.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_134.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_135.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_136.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_137.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_138.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_139.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_14.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_140.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_141.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_142.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_143.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_144.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_145.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_146.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_147.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_148.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_149.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_15.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_150.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_151.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_152.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_153.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_154.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_155.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_156.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_157.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_158.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_159.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_16.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_160.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_161.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_162.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_163.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_164.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_165.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_166.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_167.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_168.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_169.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_17.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_170.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_171.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_172.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_173.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_174.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_175.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_176.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_177.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_178.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_179.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_18.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_180.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_181.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_182.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_183.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_184.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_185.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_186.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_187.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_188.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_189.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_19.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_190.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_191.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_192.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_193.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_194.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_195.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_196.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_197.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_198.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_199.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_2.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_20.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_200.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_201.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_202.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_203.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_204.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_205.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_206.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_207.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_208.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_209.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_21.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_210.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_211.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_212.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_213.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_214.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_215.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_216.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_217.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_218.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_219.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_22.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_220.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_221.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_222.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_223.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_224.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_225.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_226.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_227.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_228.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_229.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_23.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_230.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_231.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_232.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_233.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_234.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_235.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_236.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_237.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_238.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_239.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_24.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_240.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_241.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_242.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_243.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_244.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_245.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_246.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_247.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_248.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_249.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_25.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_250.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_26.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_27.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_28.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_29.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_3.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_30.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_31.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_32.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_33.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_34.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_35.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_36.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_37.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_38.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_39.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_4.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_40.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_41.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_42.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_43.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_44.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_45.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_46.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_47.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_48.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_49.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_5.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_50.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_51.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_52.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_53.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_54.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_55.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_56.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_57.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_58.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_59.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_6.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_60.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_61.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_62.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_63.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_64.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_65.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_66.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_67.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_68.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_69.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_7.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_70.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_71.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_72.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_73.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_74.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_75.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_76.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_77.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_78.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_79.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_8.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_80.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_81.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_82.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_83.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_84.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_85.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_86.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_87.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_88.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_89.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_9.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_90.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_91.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_92.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_93.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_94.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_95.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_96.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_97.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_98.fasta_snps.vcf.gz \
+Brazil_2020_07_01-2020_12_31_99.fasta_snps.vcf.gz > ../../../VariantList/merged.vcf
+```
+
+# 2.6) From Merged vcf file, create list of Variants to be used in for loop
+
+Sentence test.
+
+
+# Start printing all lines of vcf file
+
+```{bash}
+# Print the colomn in vcf file, containing the mutation positions
+# Note the column with name "POS"
+pwd
+awk '{print $2}'  ./VariantList/merged.vcf | head -n 30
+```
+
+# Remove top 26 lines, so that positions/mutation names are consistent
+
+```{bash}
+# Remove top 26 lines
+awk '{print $2}'  ./VariantList/merged.vcf | awk 'NR > 26 { print }' | head -n 30
+```
+
+# Count number of Mutations identified in the region
+
+```{bash}
+# Remove top 26 lines
+awk '{print $2}' ./VariantList/merged.vcf | awk 'NR > 26 { print }' | awk 'NR > 26 { print }' | wc -l
+```
+
+# Export list of SNPs to be used in for loop
+
+```{bash, eval=F}
+# I set eval this chunk to FALSE because I will only change it if I want to change the concatenated list of mutations
+# Need to validate the number of top lines to be removed
+# Remove top 26 lines
+awk '{print $2}' ./VariantList/merged.vcf | awk 'NR > 26 { print }' > ./VariantList/snp_list_merged.txt
+```
+
+# 5) Counting the number of mutations
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to folder containing VCF files with SNP information 
+cd ./regions/$regionOfinterest/vcf_snps
+
+# Count number of files containing some SNPs
+echo "Mutation N501Y"
+grep -w 23063 * | wc -l #2/250 files
+grep -w 23064 * | wc -l # 0/250 files
+grep -w 23065 * | wc -l # 0/250 files
+echo "Mutation P681H"
+grep -w 23603 * | wc -l # 0/250 files
+grep -w 23604 * | wc -l # 2/250 files
+grep -w 23605 * | wc -l # 0/250 files
+echo "HV 69–70 deletion"
+grep -w 21766 * | wc -l
+grep -w 21767 * | wc -l
+grep -w 21768 * | wc -l
+grep -w 21769 * | wc -l
+grep -w 21770 * | wc -l
+grep -w 21771 * | wc -l
+grep -w 21772 * | wc -l
+echo "Mutations from Yin"
+grep -w 241 * | wc -l
+grep -w 3037 * | wc -l
+grep -w 11083 * | wc -l
+grep -w 14408 * | wc -l
+grep -w 17747 * | wc -l
+grep -w 17858 * | wc -l
+grep -w 18060 * | wc -l
+grep -w 23403 * | wc -l
+grep -w 26144 * | wc -l
+grep -w 27046 * | wc -l
+grep -w 28144 * | wc -l
+grep -w 28881 * | wc -l
+grep -w 28882 * | wc -l
+grep -w 28883 * | wc -l
+```
+
+# 6.1) Implementation of Allelic Frequency Calculation (Original Script)
+
+* To attribute the result of the computational evaluation to the variable, the following reference was consulted:
+
+https://stackoverflow.com/questions/4651437/how-do-i-set-a-variable-to-the-output-of-a-command-in-bash
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to folder containing fasta files
+cd ./regions/$regionOfinterest/fasta
+
+NumeroTotalFASTA=$(for i in *fasta; do echo $i; done | wc -l)
+echo "${NumeroTotalFASTA}"
+
+# Move to folder containing SNP (VCF) files
+cd ../vcf_snps
+
+# Count number of files containing SNP of interest
+NumeroN501Y=$(grep 23063 * | wc -l )
+echo "${NumeroN501Y}"
+
+# Calculate frequency of SNP of interest
+echo "scale=3; ${NumeroN501Y} / ${NumeroTotalFASTA} " | bc
+
+##frequency= ( $NumeroTotalFASTA / $NumeroN501Y )
+##echo " A Frequência é de N501Y = $frequency"
+```
+
+# 6.2) Calculate Frequency of Variants per Region in for loop, using List of Variant positions
+
+* This script uses VariantList.txt.tmp, a list prepared independent of the merge process shown proviously
+
+* This list contains mutations reported in Lin 2020 plus variant N501 reported for the UK, South Africa and Brazil in early 2021 
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to folder containing fasta files
+cd ./regions/$regionOfinterest/fasta
+
+# Note: how save a bash output to a variable?
+NumeroTotalFASTA=$(for i in *fasta; do echo $i; done | wc -l)
+for Variant in $(cat ../../../VariantList/VariantList.txt.tmp); do
+  Variant_Total_Occurrences=$(grep -w $Variant ../vcf_snps/* | wc -l )
+  echo "scale=2; 100*${Variant_Total_Occurrences} / ${NumeroTotalFASTA} " | bc
+  #echo "scale=3; ${Variant_Total_Occurrences} / ${NumeroTotalFASTA} " | bc
+done
+```
+
+# 6.3) Calculate Frequency (Merged List of Variant positions)
+
+# 6.3.1) 
+
+* This script uses the merge process shown previously
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to folder containing fasta files
+cd ./regions/$regionOfinterest/fasta
+
+# Note: how save a bash output to a variable?
+NumeroTotalFASTA=$(for i in *fasta; do echo $i; done | wc -l)
+for Variant in $(cat ../../../VariantList/snp_list_merged.txt); do
+  Variant_Total_Occurrences=$(awk '{print $2}' ../vcf_snps/* | grep -w $Variant | wc -l )
+  echo "scale=2; 100*${Variant_Total_Occurrences} / ${NumeroTotalFASTA} " | bc
+  #echo "scale=3; ${Variant_Total_Occurrences} / ${NumeroTotalFASTA} " | bc
+done
+```
+
+# 6.3.2) Breaking down script into its parts
+
+* This part prints in color the grepped string (the string in this case is the Variant Position)
+
+* The code below assumes you are inside the fasta folder
+
+```{bash}
+# Define the region of interest, for present chunk.
+regionOfinterest=brazil
+
+# Move to folder containing fasta files
+cd ./regions/$regionOfinterest/fasta
+
+for Variant in $(cat ../../../VariantList/snp_list_merged.txt); do grep -w --color $Variant ../vcf_snps/*; done
+```
+
+
+# 7) Viewing Variants of Interest
+
+* Polar interactions between the SARS-CoV-2 Spike RBD protein (white) and the human ACE2 protein (blue) calculated by Pymol using the mutagenesis tool.
+
+![Polar interactions between the SARS-CoV-2 Spike RBD protein (white) and the human ACE2 protein (blue) calculated by Pymol using the mutagenesis tool. A) Interaction of wild-type ASN501 (N501) residue in the Spike SARS-CoV protein binding domain (RBD) with tyrosine 41 in ACE2; B) When Asparagine is replaced by Tyrosine in RBD, the number of possible hydrogen interactions increases between Spike RBD and ACE2, possibly explaining the higher affinity between the virus Spike protein and ACE2.](./Figures/ACE2_Spike.png){width=90%}
+
+# 7) Viewing Variants of Interest
+ 
+ A) Interaction of wild-type ASN501 (N501) residue in the Spike SARS-CoV protein binding domain (RBD) with tyrosine 41 in ACE2;
+
+
+![Polar interactions between the SARS-CoV-2 Spike RBD protein (white) and the human ACE2 protein (blue) calculated by Pymol using the mutagenesis tool. A) Interaction of wild-type ASN501 (N501) residue in the Spike SARS-CoV protein binding domain (RBD) with tyrosine 41 in ACE2; B) When Asparagine is replaced by Tyrosine in RBD, the number of possible hydrogen interactions increases between Spike RBD and ACE2, possibly explaining the higher affinity between the virus Spike protein and ACE2.](./Figures/ACE2_Spike.png){width=90%}
+
+# 7) Viewing Variants of Interest
+ 
+ B) When Asparagine is replaced by Tyrosine in RBD, the number of possible hydrogen interactions increases between Spike RBD and ACE2, possibly explaining the greater affinity between the virus Spike protein and ACE2.
+
+
+![Polar interactions between the SARS-CoV-2 Spike RBD protein (white) and the human ACE2 protein (blue) calculated by Pymol using the mutagenesis tool. A) Interaction of wild-type ASN501 (N501) residue in the Spike SARS-CoV protein binding domain (RBD) with tyrosine 41 in ACE2; B) When Asparagine is replaced by Tyrosine in RBD, the number of possible hydrogen interactions increases between Spike RBD and ACE2, possibly explaining the higher affinity between the virus Spike protein and ACE2.](./Figures/ACE2_Spike.png){width=90%}
+
+
+# 8) References: Identification of Variants
+
+* Brazil, South Africa and UK variants
+
+https://www.the-scientist.com/news-opinion/a-guide-to-emerging-sars-cov-2-variants-68387
+
+* *Variant call* Samtools
+
+https://www.ebi.ac.uk/sites/ebi.ac.uk/files/content.ebi.ac.uk/materials/2014/140217_AgriOmics/dan_bolser_snp_calling.pdf
+
+# 8) References: 3D Protein Visualization with Pymol
+
+* ACE2 and RBD interaction model of Spike protein:
+
+https://www.youtube.com/watch?v=hcnnKrlqa9M
+
+* Protein Data Bank Structure (PDB):
+
+https://www.rcsb.org/structure/6VW1
+
+* Indicating amino acids in Pymol:
+
+https://www.youtube.com/watch?v=nFY3EjBNPBQ
+
+* Mutagenesis using Pymol:
+
+https://www.youtube.com/watch?v=M-VCBz83nfs
+
+
